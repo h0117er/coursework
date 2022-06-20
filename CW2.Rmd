@@ -1,0 +1,1275 @@
+---
+title: "Analytical report for SDG and coffee production data"
+author: "219505530"
+output:
+  pdf_document:
+    keep_tex: yes
+    number_sections: yes    
+  html_document:
+    number_sections: no
+    toc: yes
+    toc_float: yes
+    code_download: yes
+    code_folding: hide
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE, message = FALSE)
+```
+
+```{r libraries,echo= FALSE}
+# include your libraries here
+# use echo = FALSE if you do not want the Code button to appear 
+library(tidyverse)
+library(modelr)
+# install.packages("psych")
+library(PerformanceAnalytics)
+library(kableExtra)
+library(psych) 
+library(broom)
+library(mlmRev)
+library(purrr)
+library(effects)
+library(ggpubr)
+library(GGally)
+```
+
+
+<!--
+You can include non-coding comments using these delimiters. What is written inside these delimiters wont be knitted into the html document!
+
+Do not change the structure of the document, just fill in the sections as indicated 
+You can only change the headings indicated with [*]
+-->
+
+
+# Sustainable development goals (SDG) data
+
+
+```{r part_1}
+sdg <- read_csv("https://people.bath.ac.uk/kai21/MA50258/data/sdg.csv")
+sdg <- na.omit(sdg) #259
+```
+
+
+### How does the infant mortality rate change over time for different countries?
+
+This data set was provided from 89 countries associated with 9 variables including education and socio-demographic information by year. There are removed as the number of missing rows is 9 in total. Before starting the main analysis, I made a question to decide how to analyse this data set. 
+
+
+```{r summary_table}
+sdg <- sdg %>% mutate(year_centre =year - 2015)
+sdg_summary <- sdg %>% select(2:3,5:8,10) %>% 
+                        group_by(continent, year)
+describe(sdg_summary[3:7])[c('mean','sd','median','min','max')] %>% kable(digits=2, caption="summary statistics") %>% 
+  kable_styling(full_width = F)
+```
+
+
+According to the summary statistics, gdp and infant mortality rate are left skewed as the value of mean is bigger than median values and others are shown to be left skewed. 
+By generating year_centre, I also tried to check the effects in linear mixed models I will mention below. 
+
+
+```{r corr_matrix, out.width="85%", fig.align='center'}
+ggpairs(sdg[c(2, 5,6,7,8)])
+```
+
+
+By a correlation matrix, it is shown that the distribution of infant mortality rate in the matrix is exceedingly left-skewed, as indicated by the values in the table above. Moreover, it is highly correlated with gdp and life expectancy and mortality rate, so, I highly recommend using these two variables for modelling and discovering how affect the response variable over years.
+
+
+
+```{r visualisation_part1}
+# different regression forms for years_education
+plot1 <- sdg %>% 
+  ggplot(aes(x = years_education, y = infant_mortality_rate)) +
+    geom_point() + 
+      scale_y_continuous(trans="log") + 
+        coord_trans(y = scales::exp_trans(exp(1))) +
+    geom_smooth(method = lm,formula = y ~ x, se = F, col="red")+
+    labs(title="Linear smoothing")
+plot2 <- sdg %>% 
+  ggplot(aes(x = years_education, y = infant_mortality_rate)) +
+    geom_point() +
+      scale_y_continuous(trans="log") + 
+        coord_trans(y = scales::exp_trans(exp(1))) +
+    geom_smooth(method = lm,formula = y ~ I(x^2), se = F, col="red")+
+    labs(title="Quadratic smoothing")
+plot3 <- sdg %>% 
+  ggplot(aes(x = years_education, y = infant_mortality_rate)) +
+    geom_point() +
+      scale_y_continuous(trans="log") + 
+        coord_trans(y = scales::exp_trans(exp(1))) +
+    geom_smooth(method = lm,formula = y ~ I(x^3), se = F, col="red") + 
+      labs(title="Cubic smoothing")
+
+# for gdp
+plot4 <- sdg %>% ggplot(aes(gdp, infant_mortality_rate))+
+          geom_point()+
+            scale_y_continuous(trans="log") + 
+              coord_trans(y = scales::exp_trans(exp(1))) +
+                geom_smooth(method = lm,
+                  formula = y ~ I(log(x)), se = F, col="red") + 
+                    labs(title="log transformation")
+
+# for life_expectancy
+plot5 <- sdg %>% 
+  ggplot(aes(x = life_expectancy, y = infant_mortality_rate)) +
+    geom_point() + 
+      scale_y_continuous(trans="log") + 
+        coord_trans(y = scales::exp_trans(exp(1))) +
+    geom_smooth(method = lm,formula = y ~ x, se = F, col="red")
+plot6 <- sdg %>% 
+  ggplot(aes(x = life_expectancy, y = infant_mortality_rate)) +
+    geom_point() +
+      scale_y_continuous(trans="log") + 
+        coord_trans(y = scales::exp_trans(exp(1))) +
+    geom_smooth(method = lm,formula = y ~ I(x^2), se = F, col="red")
+plot7 <- sdg %>% 
+  ggplot(aes(x = life_expectancy, y = infant_mortality_rate)) +
+    geom_point() +
+      scale_y_continuous(trans="log") + 
+        coord_trans(y = scales::exp_trans(exp(1))) +
+    geom_smooth(method = lm,formula = y ~ I(x^3), se = F, col="red")
+
+ggarrange(plot1, plot2, plot3,plot4, plot5, plot6,plot7, nrow = 2, ncol=4)
+
+
+```
+
+
+I decided to plot the loess smoothing to each numeric variable on the scatter plot below. By making the cubic smoothing, I tried to figure out the non-linearity relationship which I didn't notice between the response variable transformed as log and variates. After transforming the response variables as log, it looked linearity from life_expectancy and years_education. Also, the plot between gdp with log transformation and the transformed response variable has a non-linearity relationship, however, as it looks fit, it will take account into when modelling. 
+
+
+
+We've assumed the data was to be independent which means individuals do not affect each other in terms of their possibilities of the different events so far, however, it is not always a tenable assumption in reality. If the data set followed the non-linear dependency and in particular, collected on some set of subjects at different points in time called longitudinal data, it should be linear mixed effect models. That's why I decide to apply the linear mixed models for this data set. For these models, it should have the group structures which there are dependent within the groups, but not necessarily between groups. To evaluate the differences between continents, we should consider random effects and fixed effects both.
+
+Hence, the response variable is the rate of infant mortality and the explanatory variables are gdp, years_education, life_expectancy and income_class. As I would like to investigate the effect of time on the average response variable and the effect between countries.
+
+
+
+```{r mixed_effects_summary}
+# random effects
+wo_plot <- sdg %>% ggplot(aes(year, infant_mortality_rate, group=country, col=continent))+
+          geom_line() + 
+            labs(x="year", 
+                 y="infant mortality", 
+                 title="The general trend by country, year")
+
+fmla_null <- infant_mortality_rate ~ 1 + year_centre
+mod_null  <- lm(fmla_null, sdg)
+
+
+
+# tidy(mod_null)[,1:3] %>% 
+#   kable(digits  = 3,
+#         caption = "Null Model") %>%
+#     kable_styling(full_width = F)
+# overall_mean<-mean(sdg$infant_mortality_rate)
+# 
+mod_null_no_center  <- lm(infant_mortality_rate ~ 1 + year, sdg)
+# overall_mean-tidy(mod_null_no_center)[2,2]*mean(sdg$year)
+# 
+# tidy(mod_null_no_center)[,1:3] %>% 
+#   kable(digits  = 3,
+#         caption = "Null Model (no centering)") %>%
+#     kable_styling(full_width = F)
+
+with_plot <- sdg %>% add_predictions(mod_null) %>% 
+          ggplot(aes(x     = year_centre, 
+                     y     = pred, 
+                     group = country)) + 
+            geom_line(alpha = 0.2,
+                      col   = "blue") +
+              geom_line(aes(x = year_centre,
+                             y = infant_mortality_rate,
+                              group = country,
+                            col = continent), 
+                         alpha = 0.2) +
+                labs(x = "year",
+                     y = "Infant mortality",
+                     title="prediction for null model")
+
+ggarrange(wo_plot, with_plot, nrow=1, ncol=2)
+
+```
+
+
+According to the first table on the left, I can roughly say it is shown that the trend generally went down over time in the countries and the rate of decrease is different for different countries. Also, the infant mortality rate in Europe and Oceania is lower than in other continents, and the proportion from Africa is mainly arranged between 30 % and 70%. As can be seen in the right graph, it is represented the general trend of mortality rate for babies so that the percentage of infant mortality is stable regardless of year and country. Hence, I can expect that the rate of mortality will remain almost the same over the years if there is no random effect on countries.
+
+
+Firstly, I'd investigate the effects in the dataset before modelling. Based on this formula, a factor should be a categorical variable which defines several groups, i.e., I set country in this case as a factor. To detail, 1 is the fixed effect and (1|country) is the random effect of intercept.
+
+As the estimates of fixed effects are different at 12.26 and 15.45 respectively from the null model and random intercept model, I can see there are fixed effects. Also, the standard error in the random intercept and slope model is the highest at 0.068 but it is not noticeable compared to the value from the null model at 0.64. Hence, we can see standard error estimates of fixed effects are much the same and that the variability within the group is not big. By performing ANOVA, I checked the hypothesis of the intercept model is better than the model with the intercept and slope.
+
+$H_0: \textrm{The random intercept model is better.}$
+
+
+```{r random_effects}
+#hypothesis testing for random effects
+# random intercept model.
+fmla_random_intercept <- infant_mortality_rate ~ 1 + (1|country) + year_centre 
+mod_random_intercept  <- lmer(fmla_random_intercept, sdg,REML=FALSE)
+
+fmla_intercept_slope <- infant_mortality_rate ~ 1 + year_centre + (1 + year_centre | country)
+mod_intercept_slope <- lmer(fmla_intercept_slope, sdg, REML=FALSE)
+
+# coefficients tables
+summary(mod_null)$coefficients[1:2,1:2] %>% 
+  kable(digits  = 3,
+        caption = "Estimated parameters. Without Random Intercepts") %>%
+    kable_styling(full_width = F)
+
+summary(mod_random_intercept)$coefficients[1:2,1:2] %>% 
+  kable(digits  = 3,
+        caption = "Estimated parameters. With Random Intercepts") %>%
+    kable_styling(full_width = F)
+
+summary(mod_intercept_slope)$coefficients[1:2,1:2] %>% 
+  kable(digits  = 3,
+        caption = "Estimated parameters. With Random Intercepts and slope") %>%
+    kable_styling(full_width = F)
+
+anova(mod_random_intercept,mod_intercept_slope)[1:8] %>% 
+  kable(digits = 2,caption = "ANOVA Test for random effects") %>% 
+    kable_styling(bootstrap_options = "bordered", full_width = F)
+
+
+
+```
+
+
+In accordance with coefficients tables, the estimates of intercepts are not identical but they do not have distinguished changes. After applying a random effect, the estimates for standard error are doubled to the model without random effect. 
+
+
+As the p-value is significantly small, I reject the null hypothesis with $\alpha$=0.05. It means that random intercept and slope have a better fit to this data set. 
+
+To develop the models to fit the data, as the interaction and country-to-country variability can not be seen in the plots easily, I'm going to make transformed linear mixed models and generalised linear mixed effects models and compare the models below using ANOVA.
+
+
+
+$$
+E[\mbox{response|}g_2] = \alpha_0 +(\alpha_{var}+b_1)\mbox{var}
+$$
+$$
+E[\mbox{response|}g_2] = \alpha_0 +(\alpha_{var}+b_2)\mbox{var}
+$$
+...
+$$
+E[\mbox{response|}g_k] = \alpha_0 +(\alpha_{var}+b_k)\mbox{var}
+$$
+
+I can consider $\alpha_0, \alpha_{var}$ are fixed effects but unknown constants. As I set the country as a factor and there is k number of groups, $\alpha_0$ is also the fixed effect, indicating the overall mean and $\alpha_{var}$ represents the effect that time has on infant mortality in different countries. And $b_k$ depicts the random effects to figure out the variability with groups and within the groups. 
+
+
+For the first data set, I tried to build 12 different models using linear, transformed and generalised regression models with random effects and 6 different explanatory variables. In this case, it was clear to have random effects, I used mixed effects models, instead of regression models without effects. Also, the response variable in this data set characterised the left-skewed, continuous and positive, so I only consider the transformed linear model, the gamma and Gaussian distribution for generalised models. 
+
+To find out the best model for this data set, I used backwards stepwise regression to consider all possible variates and their interaction terms to get the lowest AIC. Since $R^2$ is not a goodness to measure the performance for models, in this case, I only consider the results from the ANOVA test, AIC values and residual plots and QQ-plot for normality.  
+
+
+```{r modelling}
+fmla_0 <- log(infant_mortality_rate) ~  1 + year_centre + (1 + year_centre | country) + life_expectancy + years_education + log(gdp) 
+
+fmla_1 <- log(infant_mortality_rate) ~  1 + year_centre + (1 + year_centre | country) + life_expectancy + years_education + gdp + income_class*life_expectancy + years_education*income_class
+
+# best model
+fmla_2 <- log(infant_mortality_rate) ~  1 + year_centre + (1 + year_centre | country) + income_class + log(gdp)+ life_expectancy + years_education + income_class*life_expectancy + years_education*income_class + log(gdp)*income_class 
+
+fmla_3 <- log(infant_mortality_rate) ~  life_expectancy +(year_centre | country) + log(gdp) + years_education
+
+mod_0 <- lmer(fmla_0, sdg)
+# anova(mod_intercept_slope,mod_0)
+mod_1 <- lmer(fmla_1, sdg)
+mod_2 <- lmer(fmla_2, sdg)
+# anova(mod_1,mod_2)
+mod_3 <- lmer(fmla_3, sdg)
+# anova(mod_2,mod_3)
+
+
+#glmm - gamma
+#best
+fmla_0 <- infant_mortality_rate ~  1 + year_centre + (1 + year_centre | country) + life_expectancy + years_education + log(gdp) 
+
+fmla_1 <- infant_mortality_rate ~  1 + year_centre + (1 + year_centre | country) + life_expectancy + years_education + gdp + income_class*life_expectancy + years_education*income_class
+
+fmla_2 <- infant_mortality_rate ~  1 + year_centre + (1 + year_centre | country) + income_class + log(gdp)+ life_expectancy + years_education + income_class*life_expectancy + years_education*income_class + log(gdp)*income_class 
+
+fmla_3 <- infant_mortality_rate ~  life_expectancy + I(life_expectancy^2)+(year_centre | country) + log(gdp) + years_education
+
+glmm_0_gamma <- glmer(fmla_0, sdg, family=Gamma(link="log"))
+glmm_1_gamma <- glmer(fmla_1, sdg, family=Gamma(link="log"))
+glmm_2_gamma <- glmer(fmla_2, sdg, family=Gamma(link="log"))
+glmm_3_gamma <- glmer(fmla_3, sdg, family=Gamma(link="log"))
+
+# anova(glmm_0_gamma, glmm_1_gamma)
+# anova(glmm_0_gamma, glmm_2_gamma)
+# anova(glmm_0_gamma, glmm_3_gamma)
+# summary(glmm_0_gamma)
+
+
+
+# glmm - gaussian
+fmla_0 <- infant_mortality_rate ~  1 + year_centre + (1 + year_centre | country) + life_expectancy + years_education + log(gdp) 
+
+fmla_1 <- infant_mortality_rate ~  1 + year_centre + (1 + year_centre | country) + life_expectancy + years_education + gdp + income_class*life_expectancy + years_education*income_class
+
+fmla_2 <- infant_mortality_rate ~  1 + year_centre + (1 + year_centre | country) + income_class + log(gdp)+ life_expectancy + years_education + income_class*life_expectancy + years_education*income_class + log(gdp)*income_class 
+#best
+fmla_3 <- infant_mortality_rate ~  life_expectancy +(year_centre | country) + log(gdp) + years_education
+
+glmm_0_gau <- glmer(fmla_0, sdg, family=gaussian(link="log"))
+glmm_1_gau <- glmer(fmla_1, sdg, family=gaussian(link="log"))
+glmm_2_gau <- glmer(fmla_2, sdg, family=gaussian(link="log"))
+glmm_3_gau <- glmer(fmla_3, sdg, family=gaussian(link="log"))
+
+# anova(glmm_0_gau,glmm_1_gau)
+# anova(glmm_0_gau,glmm_2_gau)
+# anova(glmm_0_gau,glmm_3_gau)
+
+
+```
+
+
+```{r evaluation}
+diagnostics1 <-
+  data.frame(residuals   = residuals(mod_2),
+             fitted_vals = fitted(mod_2),
+             country     = sdg$country)  
+
+plt1 <- diagnostics1 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "LOG Transformed LMM") + theme(plot.title = element_text(size=8))
+
+ordered_contry<-sdg$country[order(diagnostics1$residuals)]
+
+plt2 <- diagnostics1 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "LOG Transformed(Residuals)")+ theme(plot.title = element_text(size=8))
+
+ranefs<-ranef(mod_2)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$year_centre)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+plt3 <- ranefs %>% 
+ ggplot(aes(sample = year_centre))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random(LOG Transformed)(slopes)")+ theme(plot.title = element_text(size=6))
+
+plt4 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random(LOG Transformed)(intercepts)")+ theme(plot.title = element_text(size=6))
+
+# glmm - gamma
+diagnostics2 <-
+  data.frame(residuals   = residuals(glmm_0_gamma),
+             fitted_vals = fitted(glmm_0_gamma),
+             country     = sdg$country)  
+
+plt5 <- diagnostics2 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "Gamma GLMM(log)") + theme(plot.title = element_text(size=8))
+
+ordered_contry<-sdg$country[order(diagnostics2$residuals)]
+
+plt6 <- diagnostics2 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "Gamma(Residuals)")+ theme(plot.title = element_text(size=6))
+
+ranefs<-ranef(glmm_0_gamma)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$year_centre)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+plt7 <- ranefs %>% 
+ ggplot(aes(sample = year_centre))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random(Gamma)(slopes)")+ theme(plot.title = element_text(size=6))
+
+plt8 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random(Gamma)(intercepts)")+ theme(plot.title = element_text(size=6))
+
+
+# GLMM
+diagnostics3 <-
+  data.frame(residuals   = residuals(glmm_3_gau),
+             fitted_vals = fitted(glmm_3_gau),
+             country     = sdg$country)  
+
+plt9 <- diagnostics3 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "Gaussian GLMM(log)")+ theme(plot.title = element_text(size=8))
+
+ordered_contry<-sdg$country[order(diagnostics3$residuals)]
+
+plt10 <- diagnostics3 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "Gaussian(Residuals)")+ theme(plot.title = element_text(size=8))
+
+ranefs<-ranef(glmm_3_gau)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$year_centre)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+plt11 <- ranefs %>% 
+ ggplot(aes(sample = year_centre))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random(Gaussian)(slopes)")+ theme(plot.title = element_text(size=8))
+
+plt12 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random(Gaussian)(intercepts)")+ theme(plot.title = element_text(size=8))
+
+ggarrange(plt1, plt2, plt3, plt4, plt5, plt6,plt7, plt8,plt9, plt10,plt11, plt12, nrow = 3, ncol=4)
+```
+
+Under the transformed models, I contained the interaction between GDP vs. income_level, income_level vs. life expectancy and education years vs. income level with the random effect. The residual plot of this model has no pattern and the QQ-plot for checking the normality of residuals also followed the linearity between -1 and 1 but it seems to need more improvement with some doubts. While the data points in the QQ-plot of the normality of intercept look satisfied with this assumption, points in the range -2 to -1.5 are away from the line. 
+
+For Gamma generalised model, the data points in the residual plots are more randomly spread around the line and the normality of residual seems to fit the line reasonably compared to other models even though the outlier is noticeable. Also, points in the QQ-plot for random effects imply the normality of intercept and slope models so that we can accept the assumption for the normality.
+
+
+
+```{r AIC}
+models <- c("Transformed LMM(mod2)","GLMM(glmm_0_gamma)","GLMM(glmm_3_gau)")
+values <- c(AIC(mod_2)-2*sum(log(1/sdg$infant_mortality_rate)),AIC(glmm_0_gamma),AIC(glmm_3_gau))
+table_1 <- rbind(models,values) 
+table_1%>% kable(digits = 2, caption="AIC Comparison") %>% 
+  kable_styling(bootstrap_options = "basic", full_width = F)
+```
+
+As generalised models are associated with the distribution, we don't need to apply adjusted AIC values, however, for comparison with the transformed and generalised models, I applied the adjusted formula to the transformed model. The Gamma generalised model has the lowest AIC, so this model is optimal to this data set. 
+
+
+
+```{r predictions, out.width="70%",fig.align = 'center'}
+sdg_fv <- sdg %>% 
+          gather_predictions(mod_2, 
+                             glmm_0_gamma,
+                             glmm_3_gau,
+                             .model = "model",
+                             .pred = "fitted_vals",
+                             type = "response")
+#fitted values plots
+sdg_fv %>% 
+  ggplot(aes(infant_mortality_rate,fitted_vals)) + 
+    geom_point() +
+        geom_smooth(method = "loess") + 
+          facet_wrap(~model) +ggtitle("Observed Vs. Fitted")
+```
+
+According to the observed vs fitted values plots, only Gaussian and Gamma generalised mixed effects model with log link have a linear relationship between the predicted proportion of the mortality for babies and the actual rate of infant mortality, pointing out the estimated and the actual values of mortality are similar. Whereas the estimated and actual figures in the transformed model looked similar, there is no linearity. 
+
+
+In conclusion, even if I remove the fixed effect of year, the rate changes with other treatment effects over countries.
+
+
+
+# Production coffee data
+
+
+```{r part_2}
+coffee_production <- read_csv("https://people.bath.ac.uk/kai21/MA50258/data/coffee.csv")
+
+coffee_1990 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 3) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1990) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1991 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 4) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1991) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1992 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 5) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1992) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1993 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 6) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1993) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1994 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 7) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1994) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1995 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 8) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1995) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1996 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 9) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1996) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1997 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 10) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1997) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1998 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 11) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1998) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_1999 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 12) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 1999) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2000 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 13) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2000) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2001 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 14) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2001) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2002 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 15) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2002) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2003 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 16) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2003) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2004 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 17) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2004) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2005 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 18) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2005) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2006 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 19) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2006) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2007 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 20) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2007) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2008 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 21) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2008) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2009 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 22) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2009) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2010 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 23) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2010) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2011 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 24) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2011) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2012 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 25) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2012) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2013 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 26) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2013) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2014 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 27) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2014) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2015 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 28) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2015) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2016 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 29) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2016) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2017 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 30) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2017) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+coffee_2018 <- coffee_production%>% 
+                select(country = 1, arabica_robusta = 2, production = 31) %>% 
+                filter(!is.na(production)& !is.na(arabica_robusta)) %>% 
+                mutate(year = 2018) %>% 
+                mutate_at(3, str_replace, " ", "") %>% 
+                mutate_at(3, as.integer)
+
+combined_data <- rbind(coffee_1990,coffee_1991,coffee_1992,coffee_1993,coffee_1994,coffee_1995,coffee_1996,coffee_1997,coffee_1998,coffee_1999,coffee_2000,coffee_2001,coffee_2002,coffee_2003,coffee_2004,coffee_2005,coffee_2006,coffee_2007,coffee_2008,coffee_2009,coffee_2010,coffee_2011,coffee_2012,coffee_2013,coffee_2014,coffee_2015,coffee_2016,coffee_2017,coffee_2018)
+
+combined_data$country <- as.factor(combined_data$country)
+combined_data$arabica_robusta <- as.factor(combined_data$arabica_robusta)
+
+# mean(1990:2018) # 2004
+combined_data <- combined_data %>% filter(production!=0) %>% 
+                  mutate(yearc = year-2004)
+
+
+describe(combined_data[3:5])[c('mean','sd','median','min','max')] %>% 
+  kable(digits=2, caption="summary statistics") %>% 
+  kable_styling(full_width = F)
+```
+
+Since this data set consisted of the bags of coffee by years between 1990 and 2018, types of coffee and country, I should manipulate the data set to determine the effects between countries. First of all, I break down the data by years and then combined the values again with the column "year". Initially, the size of a data frame was 59*31, however, the manipulated data frame has 1,483 rows and 5 columns including the centring column which is to remove the fixed effect after dealing with missing values, 0 and manipulation.
+
+According to the summary statistics, minimum and maximum values of production have a huge gap from 1 to 60,000, and the mean value is around 6 times higher than the value of the median. From those numbers, we can point out that this data set is left-skewed and has long tails as the median is smaller than the expected value and the standard deviation is also too high. In this special case, to make a centring column with year, it is more meaningful to use the median, instead of the mean value. 
+
+
+```{r exploration_part2,out.width="75%", fig.align='center'}
+combined_data %>% ggplot(aes(year, production, group=country, col=arabica_robusta))+
+          geom_line() + 
+            labs(x="year", 
+                 y="Coffee production", 
+                 title="The general trend by country, year")
+```
+
+
+
+As made the above plot, I wanted to see the relationship between year, coffee production and arabica robusta which represented four different types of coffee. According to the level of types of coffee, the trend of (R/A) has increased since 1990, and production in one country which cultivated A/R type of coffee was rocketed throughout the years. Because other types of coffee do not have any noticeable change and the production in almost countries shows similar patterns below 10,000 bags, I will investigate the method for dealing with outliers analysis.  
+
+
+```{r outliers, fig.align='center'}
+mod_1 <- lm(production ~ 1+ yearc + arabica_robusta*country,combined_data)
+mod_2 <- lm(log(production) ~ 1+ yearc + arabica_robusta*country,combined_data)
+mod_3 <- glm(production ~ arabica_robusta*country,
+             family = Gamma(link = "log"),
+             combined_data)
+
+
+diagn_m1 <- augment(mod_1) %>% 
+              mutate(residuals = production - .fitted)
+
+
+diagn_m2 <- augment(mod_2) %>% 
+              mutate(residuals = `log(production)` - .fitted)
+
+qq_m1 <- diagn_m1 %>% 
+            ggplot(aes(sample = residuals)) +
+              stat_qq() + 
+                stat_qq_line() +
+                  labs(title = "Model 1", y = "residuals")
+              
+              
+
+qq_m2 <- diagn_m2 %>%
+          ggplot(aes(sample = residuals)) +
+            stat_qq() + 
+              stat_qq_line() +
+                labs(title = "Model 2", y = "residuals")
+
+
+ggarrange(qq_m1, qq_m2, nrow=1, ncol=2)
+
+```
+
+
+The data points should have been randomly scattered around the line for an ideal, however, they are not sufficiently gathered around the line at the end of the lines for two models. For model 2, as we made a transformed model, for calculating the residuals, we should apply log transformation to the response variable. The transformed linear regression model looks to follow the linear relationships in some parts, but It does not appear any normality in model 1. These two models need to improve systematic departure from the normality of residuals.
+
+
+```{r outliers_2,out.width="75%", fig.align='center'}
+diagn_m1 <- diagn_m1 %>% 
+              mutate(.stud.resid = sigma(mod_1) * (.std.resid/.sigma))
+
+q_val<-qt(0.025,df=nobs(mod_1)-length(coef(mod_1))-1)
+
+
+res_plot <- diagn_m1 %>% 
+  ggplot(aes(x=1:nobs(mod_1),y=.stud.resid)) +
+    geom_point() +
+      geom_hline(yintercept = c(-q_val,0,q_val),
+                 lty = 2, 
+                 size = 0.2) +
+        labs(title = "Model 1", x = "index", y = "Studentized residual")
+
+diagn_m2 <- diagn_m2 %>% 
+              mutate(.stud.resid = sigma(mod_2) * (.std.resid/.sigma))
+
+res_plot2 <- diagn_m2 %>% 
+  ggplot(aes(x=1:nobs(mod_2),y=.stud.resid, label=country)) +
+    geom_point() +
+      geom_hline(yintercept = c(-q_val,0,q_val),
+                 lty = 2, 
+                 size = 0.2) +
+        labs(title = "Model 2", x = "index", y = "Studentized residual")
+
+outliers_m1 <- which(abs(diagn_m1$.stud.resid)>abs(q_val))
+outliers_m2 <- which(abs(diagn_m2$.stud.resid)>abs(q_val))
+
+ggarrange(res_plot, res_plot2, nrow=1, ncol=2)
+
+
+total <- data.frame(count(combined_data[outliers_m1,c("country")]), count(combined_data[outliers_m2,"country"]))
+total %>% 
+    rename("model1"= n, "model2"=n.1) %>% 
+      kable(caption="The number of outliers") %>% 
+      kable_styling(bootstrap_options = "basic", full_width = F)
+# count(combined_data[outliers_m1,c("country")])
+# count(combined_data[outliers_m2,"country"])
+```
+
+
+To check the some data points as outliers using the studentized residuals plot, we should make the residuals by dividing the standardised residuals by .sigma and multiply with the sigma for the whole data set. This formula in diagn_m1 is not a formula for studentised error, however, this represented the relationship between these two residuals.
+Based on these plots, there are lots of data points outside the lines at 46 and 92, respectively. So we can consider those points are suspicious with respect to each model.
+
+
+
+```{r cook_distance,out.width="75%", fig.align='center'}
+cook_plot <- diagn_m1 %>% 
+  ggplot(aes(x=1:nobs(mod_1),y=.cooksd)) +
+    geom_point() +
+      geom_hline(yintercept = c(0,1),
+                 lty = 2, 
+                 size = 0.2) +
+        labs(title = "Model 1", x = "index", y = "Cook's distance")
+
+cook_plot2 <- diagn_m2 %>% 
+  ggplot(aes(x=1:nobs(mod_2),y=.cooksd)) +
+    geom_point() +
+      geom_hline(yintercept = c(0,1),
+                 lty = 2, 
+                 size = 0.2) +
+        labs(title = "Model 2", x = "index", y = "Cook's distance")
+
+influencers_m1 <- which(abs(diagn_m1$.cooksd)>0.2)
+influencers_m2 <- which(abs(diagn_m2$.cooksd)>0.2)
+
+ggarrange(cook_plot, cook_plot2,nrow=1, ncol=2)
+
+```
+
+Another method to check the influence of outliers is to use Cook's distance. It is interpretable closer to 1, the more chance to fail applicable data points. Hence, in these graphs, each value is not significantly far away from the point of 0, we can say the outliers which we already checked above are not influential to these models. 
+
+Using this information, I'm going to investigate the effects of random or fixed effects and determine which models are suitable for this data set. 
+
+
+
+
+
+```{r, plots_for_effects, out.width="85%", fig.align='center'}
+fmla_null <- production ~ 1 + yearc
+
+mod_null  <- lm(fmla_null, combined_data)
+mod_without_random  <- lm(production  ~ yearc + country,
+                           data      = combined_data,
+                           contrasts = list(country = "contr.sum"))
+
+fmla_random_intercept <- production ~ 1 + (1|country) + yearc
+
+mod_random_intercept  <- lmer(fmla_random_intercept, combined_data)
+
+group_means <-
+combined_data %>% 
+  group_by(country) %>% 
+    summarise(mean_reaction = mean(production))
+
+grand_mean <- mean(combined_data$production)
+
+re_int <-
+  ranef(mod_random_intercept) %>% 
+    as_tibble() %>% 
+          bind_cols(fixed=group_means$mean_reaction-grand_mean)
+
+re_int %>% 
+  ggplot(aes(y   = grp,
+             x   = condval,
+             col = "Random")) +
+      geom_point(size = 0.5) +
+          geom_point(aes(x   = fixed, 
+                         y   = grp,
+                         col = "Fixed"),
+                     alpha=0.4) +
+            labs(x   = "Production", 
+                 y   = "Country",
+                 col = "Effect") +
+   guides(y = guide_axis(check.overlap = TRUE))  +
+    labs(title="Estimated fixed effects with random effects of each country")
+```
+
+We can calculate the fixed effects using R. First at the most, using group_by(), we can identify the mean values by the country which is a factor in this data set. After that, we should know the grand mean which is an expected value of the production which is at around 2351.1.without regard to other explanatory variables. Then by subtracting the values of the mean by countries from the grand mean, we can obtain the fixed effects. Surprisingly, the estimates of random effects are closer to the mean value which is equal to 0 than fixed effects and it is called shrinkage towards the grand average.
+
+
+
+
+```{r summary_table_part2 }
+mod_random_int_slope <- lmer(formula = production ~ 1 + (1 + yearc|country) + yearc,combined_data) 
+
+summary(mod_without_random )$coefficients[1:2,1:2] %>% 
+  kable(digits  = 3,
+        caption = "Estimated parameters. Without Random Intercepts") %>%
+    kable_styling(full_width = F)
+
+summary(mod_random_intercept)$coefficients[,1:2] %>% 
+  kable(digits  = 3,
+        caption = "Estimated parameters. Random Intercepts") %>%
+    kable_styling(full_width = F)
+
+summary(mod_random_int_slope)$coefficients[1:2,1:2] %>% 
+  kable(digits  = 3,
+        caption = "Estimated parameters. Random Intercepts Slope") %>%
+    kable_styling(full_width = F)
+```
+
+
+When compared to the first two tables, we can observe the estimates of intercepts are not identical but much the same at 2209 and 2213, respectively. And the standard error of intercept in the model with random effects has a huge increase that started at 67.5 to 796 compared to the model without the random effect. 
+
+Note that discovered the fixed effects in the models so far, however, we want to know how different groups are correlated. To define the correlation between intercept and slope, I made another random intercept slope model to identify variability between groups and within groups as well. Under the intercept model, I got 5935.8 as the between-country variability and  2134.4 as the estimate of within-subject (also called residual) variability, respectively. So total estimate of variance is $5935.8^2 + 2134.4^2$ in the intercept model. Compared to the estimated variance which is $2098.238^2$ from the model without random effects, it stands out the variability with the random effects. 
+
+In the last table for the intercept and slope model, the estimates of intercept are similar but the standard error changes from 67.5 to 800.1 that increasing almost 12 times compared to the model with no random effects.
+
+
+
+```{r prediction_graphs, out.width="75%", fig.align="center" }
+combined_data %>% 
+  add_predictions(mod_random_int_slope) %>% 
+    ggplot(aes(x = yearc, 
+               y = pred, 
+               group = country)) + 
+      geom_line(alpha=0.2,
+                col="blue") +
+        geom_line(aes(x = yearc,
+                      y = production, 
+                      group = country), 
+                  alpha=0.2)
+```
+
+As can be seen in the tables above, the lines are spread with different slopes and intercept in this plot. Whilst it is shown that amount of coffee in countries was increased, most countries followed the trend of stability. 
+
+$$
+E[\mbox{production|country1}] = \alpha_0 +(\alpha_{var}+b_1)var
+$$
+$$
+E[\mbox{production|country2}] = \alpha_0 +(\alpha_{var}+b_2)var\\
+$$
+...
+$$
+E[\mbox{production|countryk}] = \alpha_0 +(\alpha_{var}+b_k)var\\
+$$
+
+Each line tells the each observation of countries which is a factor. Specially, in the random intercept model, as our formula in R is 
+$production$ ~ $1 + (1|country)\\$ where $\alpha_{var}$ is equal to 0. Since this model is satisfied with the normality of intercept, $E[b_1]=E[b_2]=...=E[b_k]$ = 0 and $Var[b_1] = Var[b_2] =...= Var[b_k] = \sigma^2$.
+
+
+```{r hypothesis_testing_part2}
+anova(mod_random_intercept, mod_random_int_slope)
+```
+
+To test the hypothesis with a model with random intercept and an intercept and slope model, we should set
+
+$H_0$ : the random intercept model is better. 
+
+
+$H_a$ : The model with intercept and slope is better.
+
+As the p-value is small with a 5% significance level, we can reject the null hypothesis, i.e., the second model is a better fit for this data set.
+
+
+By this result, I'm going to develop the models to explain this data set well and fit the involved models by maximum likelihood instead of restricted maximum likelihood (REML) as I've learned this method is a better fit in slides.
+
+
+```{r modelling_part2}
+fmla_2_0 <- production~1+(1+yearc|country)+arabica_robusta
+mod_lm_1 <- lmer(fmla_2_0, combined_data, REML=FALSE)
+# anova(mod_random_int_slope, mod_lm_1) # arabica_robusta is not meaningful
+
+# best model for lmm
+fmla_2_1 <- production~1+(1+yearc|country)+arabica_robusta*country 
+mod_lm_2 <- lmer(fmla_2_1, combined_data, REML=FALSE)
+# anova(mod_random_int_slope, mod_lm_2) 
+
+fmla_2_2 <- production~ (1|country)+arabica_robusta*country 
+mod_lm_3 <- lmer(fmla_2_2, combined_data, REML=FALSE)
+# anova(mod_lm_2, mod_lm_3) 
+
+fmla_2_3 <- production~1+(1+yearc|country)+arabica_robusta*yearc 
+mod_lm_4 <- lmer(fmla_2_3, combined_data, REML=FALSE)
+# anova(mod_random_int_slope, mod_lm_4) 
+
+fmla_2_3 <- production~1+(1+yearc|country) 
+mod_lm_4 <- lmer(fmla_2_3, combined_data, REML=FALSE)
+# anova(mod_random_int_slope, mod_lm_4) 
+
+# transformed models
+fmla_2_4 <- log(production)~ (yearc|country) +arabica_robusta
+mod_tr_1 <- lmer(fmla_2_4, combined_data, REML=FALSE)
+#best
+fmla_2_5 <- log(production)~ (yearc|country) +arabica_robusta*country 
+mod_tr_2 <- lmer(fmla_2_5, combined_data, REML=FALSE)
+# anova(mod_tr_1, mod_tr_2)
+
+fmla_2_6 <- log(production)~ (yearc|country) +arabica_robusta*yearc 
+mod_tr_3 <- lmer(fmla_2_6, combined_data, REML=FALSE)
+# anova(mod_tr_2,mod_tr_3)
+
+# glmm 
+mod_glm_1 <- glmer(fmla_2_0, combined_data, family = gaussian(link="log"))
+#best
+mod_glm_2 <- glmer(fmla_2_1, combined_data, family = gaussian(link="log"))
+mod_glm_3 <- glmer(fmla_2_2, combined_data, family = gaussian(link="log"))
+mod_glm_4 <- glmer(fmla_2_3, combined_data, family = gaussian(link="log"))
+# anova(mod_glm_1,mod_glm_2)
+# anova(mod_glm_3,mod_glm_2)
+# anova(mod_glm_4,mod_glm_2)
+mod_glm_5 <- glmer(fmla_2_0, combined_data, family = poisson(link="log"))
+#best
+mod_glm_6 <- glmer(fmla_2_1, combined_data, family = poisson(link="log"))
+mod_glm_7 <- glmer(fmla_2_2, combined_data, family = poisson(link="log"))
+mod_glm_8 <- glmer(fmla_2_3, combined_data, family = poisson(link="log"))
+# anova(mod_glm_5,mod_glm_6)
+# anova(mod_glm_6,mod_glm_7)
+# anova(mod_glm_6,mod_glm_8)
+```
+
+
+
+
+```{r diag_part2}
+# linear mixed model
+diagnostics1 <-
+  data.frame(residuals   = residuals(mod_lm_2),
+             fitted_vals = fitted(mod_lm_2),
+             country     = combined_data$country)  
+
+pt2_plt1 <- diagnostics1 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "LMM") + theme(plot.title = element_text(size=8))
+
+ordered_contry<-combined_data$country[order(diagnostics1$residuals)]
+
+pt2_plt2 <- diagnostics1 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "LMM (Residuals)")+ theme(plot.title = element_text(size=8))
+
+ranefs<-ranef(mod_lm_2)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$yearc)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+pt2_plt3 <- ranefs %>% 
+ ggplot(aes(sample = yearc))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random for LMM(slopes)")+ theme(plot.title = element_text(size=6))
+
+pt2_plt4 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random for LMM(intercepts)")+ theme(plot.title = element_text(size=6))
+```
+
+```{r diag_part2_1}
+#transformed
+
+diagnostics2 <-
+  data.frame(residuals   = residuals(mod_tr_2),
+             fitted_vals = fitted(mod_tr_2),
+             country     = combined_data$country)  
+
+pt2_plt5 <- diagnostics2 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "LOG Transformed LMM") + theme(plot.title = element_text(size=8))
+
+ordered_contry<-combined_data$country[order(diagnostics2$residuals)]
+
+pt2_plt6 <- diagnostics2 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "LOG Transformed(Residuals)")+ theme(plot.title = element_text(size=8))
+
+ranefs<-ranef(mod_tr_2)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$yearc)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+pt2_plt7 <- ranefs %>% 
+ ggplot(aes(sample = yearc))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random(LOG Transformed)(slopes)")+ theme(plot.title = element_text(size=6))
+
+pt2_plt8 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random(LOG Transformed)(intercepts)")+ theme(plot.title = element_text(size=6))
+```
+
+```{r diag_part2_2}
+# glmm - Gaussian
+diagnostics3 <-
+  data.frame(residuals   = residuals(mod_glm_2),
+             fitted_vals = fitted(mod_glm_2),
+             country     = combined_data$country)  
+
+pt2_plt9 <- diagnostics3 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "Gaussian GLMM(log)") + theme(plot.title = element_text(size=8))
+
+ordered_contry<-combined_data$country[order(diagnostics3$residuals)]
+
+pt2_plt10 <- diagnostics3 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "Gaussian(Residuals)")+ theme(plot.title = element_text(size=6))
+
+ranefs<-ranef(mod_glm_2)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$yearc)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+pt2_plt11 <- ranefs %>% 
+ ggplot(aes(sample = yearc))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random(Gaussian)(slopes)")+ theme(plot.title = element_text(size=6))
+
+pt2_plt12 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random(Gaussian)(intercepts)")+ theme(plot.title = element_text(size=6))
+
+```
+
+```{r diag_part2_3, out.width="80%"}
+
+# GLMM- poisson
+diagnostics4 <-
+  data.frame(residuals   = residuals(mod_glm_6),
+             fitted_vals = fitted(mod_glm_6),
+             country     = combined_data$country)  
+
+pt2_plt13 <- diagnostics4 %>% 
+  ggplot(aes(x = fitted_vals,
+             y = residuals))+
+    geom_point() +
+      geom_hline(yintercept = 0,
+                 col="red") +  
+      labs(title = "Poisson GLMM(log)")+ theme(plot.title = element_text(size=8))
+
+ordered_contry<-combined_data$country[order(diagnostics4$residuals)]
+
+pt2_plt14 <- diagnostics4 %>%
+  ggplot(aes(sample = residuals))+ 
+    stat_qq() + 
+      stat_qq_line()+
+      labs(y= "residuals",
+           title = "Poisson(Residuals)")+ theme(plot.title = element_text(size=8))
+
+ranefs<-ranef(mod_glm_6)$country %>% as_tibble(rownames = "country") 
+ordered_yearc<-ranefs$country[order(ranefs$yearc)]
+ordered_intercept<-ranefs$country[order(ranefs$`(Intercept)`)]
+
+pt2_plt15 <- ranefs %>% 
+ ggplot(aes(sample = yearc))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "slopes",
+           title = "Random(Poisson)(slopes)")+ theme(plot.title = element_text(size=8))
+
+pt2_plt16 <- ranefs %>% 
+ ggplot(aes(sample = `(Intercept)`))+ 
+    stat_qq() + stat_qq_line() +
+      labs(y= "intercepts",
+           title = "Random(Poisson)(intercepts)")+ theme(plot.title = element_text(size=8))
+
+ggarrange(pt2_plt1, pt2_plt2, pt2_plt3, pt2_plt4, pt2_plt5, pt2_plt6,pt2_plt7, pt2_plt8,pt2_plt9, pt2_plt10,pt2_plt11, pt2_plt12,pt2_plt13,pt2_plt14, pt2_plt15,pt2_plt16, nrow = 4, ncol=4)
+
+models <- c("LMM","log Transformed","GLMM(Gaussian-log)","GLMM(Poisson-log)")
+values <- c(AIC(mod_lm_2)-2*sum(log(1/combined_data$production)),AIC(mod_tr_2)-2*sum(log(1/combined_data$production)), AIC(mod_glm_2),AIC(mod_glm_6))
+table_1 <- rbind(models,values) 
+table_1%>% kable(digits = 2, caption="AIC Comparison") %>% 
+  kable_styling(bootstrap_options = "basic", full_width = F)
+```
+
+
+I've made four different models of regression using mixed effects. The reason I chose those models, I wanted to compare the performance with simple LMM and transformed LMM. Also, this data set is left-skewed, positive, and integer, I determine to use Gaussian and Poisson distribution with log as a link function. Using the ANOVA test, I compared models in each regression and decided on the best model for LMM, transformed LMM, Gaussian and Poisson GLLM.
+
+In a simple linear mixed model, data points in residual vs. fitted values plot have no pattern, but It needs to improve the normality of residual in this model. And the normality of random effects with slope and intercept is satisfied to explain this characteristic. In GLMM models, while the residual plots tend to lean to the left side, the points shown in the plots do not have specific patterns and patterns in the second term of these models look similar to the same plot with simple LMM. One thing that stood out log transformed model is that residual plots look ideal to be spread and symmetric around 0 randomly. Compared to other models, the linear relationship in residuals is meaningful but the assumption for normality is not satisfied with this model, so I do not consider log transformed model.
+
+Even though the model with log transformation has the least AIC, as the normality assumption is not satisfied which is represented in the above graphs, I can not adopt it, instead, I can say the Gaussian model is better than other models. 
+
+
+```{r prediction_part2}
+coffee_fv <- combined_data %>% 
+              add_predictions(mod_lm_2)
+
+coffee_fv1 <- combined_data %>% 
+          add_predictions(mod_tr_2)
+
+coffee_fv2 <- combined_data %>% 
+          add_predictions(mod_glm_2)
+
+coffee_fv3 <- combined_data %>% 
+          add_predictions(mod_glm_6)
+
+#fitted values plots
+pred_plot4 <- coffee_fv %>% 
+  ggplot(aes(production,pred)) + 
+    geom_point() +
+        geom_smooth(method = "loess") + 
+          labs(title="LMM")
+
+pred_plot5 <- coffee_fv1 %>% 
+  ggplot(aes(production,pred)) + 
+    geom_point() +
+        geom_smooth(method = "loess") + 
+          ggtitle("Transformed")
+
+pred_plot6 <- coffee_fv2 %>% 
+  ggplot(aes(production,pred)) + 
+    geom_point() +
+        geom_smooth(method = "loess") + 
+          ggtitle("Gaussian(log)")
+
+pred_plot7 <- coffee_fv3 %>% 
+  ggplot(aes(production,pred)) + 
+    geom_point() +
+        geom_smooth(method = "loess") + 
+          ggtitle("Poisson(log)")
+
+main_plot <- ggarrange(pred_plot4, pred_plot5,pred_plot6,pred_plot7,nrow=1, ncol=4)
+
+
+annotate_figure(main_plot, top = text_grob("Observed Vs. FItted", face = "bold"))
+```
+
+
+The observed vs fitted values of the Gaussian model indicate that estimated and actual numbers of production are similar. To sum up, the random effect tells what additional change in the response variable due to the factor, without any changes in treatment effects. Therefore, the production of coffee has differences between countries as the random effect is clear in this model.
+
+
+# References
+
+
+<!--
+Include your references in this section. The ones below are just examples.
+-->
+
+1.  Wickham, H. *ggplot2: Elegant Graphics for Data Analysis* [on-line version](https://ggplot2-book.org/index.html)
+
+
+2.  Wickham, H. & Grolemund, G. *R for Data Science.* [on-line version](https://r4ds.had.co.nz/index.html)
+
+3. [Department of Maths website](https://www.bath.ac.uk/departments/department-of-mathematical-sciences/)
