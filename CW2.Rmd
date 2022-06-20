@@ -1,6 +1,6 @@
 ---
 title: "Analytical report for SDG and coffee production data"
-author: "219505530"
+author: "10000"
 output:
   pdf_document:
     keep_tex: yes
